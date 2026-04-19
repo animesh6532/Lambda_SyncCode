@@ -1,0 +1,11 @@
+{
+  "projectName": "LambdaSyncCode",
+  "environment": "dev",
+  "region": "ap-south-1",
+  "database": {
+    "host": "your-db-endpoint",
+    "user": "admin",
+    "password": "password",
+    "name": "sync_code"
+  }
+}
