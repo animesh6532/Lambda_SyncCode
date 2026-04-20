@@ -1,6 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { connectWebSocket, sendMessage } from "../services/websocket";
 import { useLocation } from "react-router-dom";
 import jsPDF from "jspdf";
+
 import Navbar from "../components/layout/Navbar";
 import Sidebar from "../components/layout/Sidebar";
 import CodeEditor from "../components/editor/CodeEditor";
@@ -9,159 +11,193 @@ import ActivityPanel from "../components/panels/ActivityPanel";
 import AIAssistant from "../components/ai/AIAssistant";
 import GitModal from "../components/modals/GitModal";
 import SettingsModal from "../components/modals/SettingsModal";
-import { useThemeStore } from "../store/themeStore";
+
 import { useToastStore } from "../store/toastStore";
 import { Download, FileText } from "lucide-react";
 
 export default function App() {
   const { state } = useLocation();
   const roomId = state?.roomId || "demo-room";
+
   const { addToast } = useToastStore();
-  
-  const [code, setCode] = useState("def greet(name):\n    print(f'Hello {name} 🚀')\n\ngreet('LambdaSyncCode')");
+
+  const wsRef = useRef(null); // ✅ FIX: persistent socket
+
+  const [code, setCode] = useState(
+    "def greet(name):\n    print(f'Hello {name} 🚀')\n\ngreet('LambdaSyncCode')"
+  );
   const [language, setLanguage] = useState("python");
   const [logs, setLogs] = useState([]);
-  const [users] = useState([{ name: "Animesh", status: "online", active: true }, { name: "Guest_2", status: "idle", active: false }]);
+  const [isRunning, setIsRunning] = useState(false);
+
+  const [users] = useState([
+    { name: "Animesh", status: "online", active: true },
+    { name: "Guest_2", status: "idle", active: false }
+  ]);
+
   const [activities, setActivities] = useState([
     { id: 1, text: "Animesh joined the room", time: "Just now" },
     { id: 2, text: "Repository connected", time: "2 min ago" }
   ]);
-  const [isRunning, setIsRunning] = useState(false);
 
+  // ✅ Toast on join
   useEffect(() => {
-    addToast(`Successfully joined room: ${roomId}`, 'success');
+    addToast(`Joined room: ${roomId}`, "success");
   }, [roomId]);
 
+  // ✅ 🔥 FIXED WebSocket Setup
+  useEffect(() => {
+    if (wsRef.current) return; // prevent duplicate
+
+    const ws = connectWebSocket(import.meta.env.VITE_WS_URL, (data) => {
+      console.log("🔥 Incoming:", data);
+
+      if (data.type === "code_update") {
+        setCode((prev) => (prev === data.code ? prev : data.code));
+      }
+
+      if (data.type === "execution_result") {
+        setLogs((prev) => [
+          ...prev,
+          { type: "output", message: data.output }
+        ]);
+        setIsRunning(false);
+      }
+    });
+
+    wsRef.current = ws;
+
+    // ✅ Wait until connection is OPEN (NO setTimeout hack)
+    ws.onopen = () => {
+      console.log("✅ Connected → Joining room");
+
+      sendMessage({
+        action: "joinRoom",
+        room_id: roomId
+      });
+    };
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+    };
+  }, []);
+
+  // ✅ RUN CODE
   const handleRun = () => {
+    if (!wsRef.current) return;
+
     setIsRunning(true);
     addToast("Executing code...", "info");
-    setLogs((prev) => [...prev, { type: "info", message: "Executing code in Lambda sandbox..." }]);
-    
-    // Simulate run
-    setTimeout(() => {
-      setLogs((prev) => [
-        ...prev,
-        { type: "success", message: "Execution successful." },
-        { type: "output", message: "Hello LambdaSyncCode 🚀" }
-      ]);
-      setActivities((prev) => [{ id: Date.now(), text: "Executed code", time: "Just now" }, ...prev.slice(0, 4)]);
-      addToast("Execution completed successfully", "success");
-      setIsRunning(false);
-    }, 1500);
+
+    setLogs((prev) => [
+      ...prev,
+      { type: "info", message: "Executing on AWS Lambda..." }
+    ]);
+
+    sendMessage({
+      action: "executeCode",
+      room_id: roomId,
+      code: code
+    });
+
+    setActivities((prev) => [
+      { id: Date.now(), text: "Executed code", time: "Just now" },
+      ...prev.slice(0, 4)
+    ]);
   };
 
+  // ✅ SAVE FILE
   const handleSaveCode = () => {
     const blob = new Blob([code], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
+
     const a = document.createElement("a");
     a.href = url;
     a.download = `code_${Date.now()}.txt`;
-    document.body.appendChild(a);
     a.click();
-    document.body.removeChild(a);
+
     URL.revokeObjectURL(url);
-    addToast("File saved successfully", "success");
+    addToast("File saved", "success");
   };
 
+  // ✅ EXPORT PDF
   const handleExportPDF = () => {
     try {
       const doc = new jsPDF();
+
       doc.setFontSize(18);
-      doc.setTextColor(40, 40, 40);
       doc.text("LambdaSyncCode", 14, 22);
-      
+
       doc.setFontSize(10);
-      doc.setTextColor(100, 100, 100);
-      doc.text(`Generated on: ${new Date().toLocaleString()}`, 14, 30);
-      
-      doc.setTextColor(200, 200, 200);
-      doc.setFontSize(40);
-      doc.text("Generated by LambdaSyncCode", 35, 150, { angle: 45, renderingMode: "fill" });
-      
-      doc.setTextColor(30, 30, 30);
-      doc.setFontSize(10);
+      doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 30);
+
       doc.setFont("courier", "normal");
       const splitCode = doc.splitTextToSize(code, 180);
       doc.text(splitCode, 14, 45);
-      
+
       doc.save(`LambdaSyncCode_${Date.now()}.pdf`);
-      addToast("Exported PDF successfully", "success");
-    } catch (err) {
-      addToast("Failed to export PDF", "error");
+      addToast("PDF exported", "success");
+    } catch {
+      addToast("Export failed", "error");
     }
   };
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-gray-50 dark:bg-dark-bg transition-colors duration-300 overflow-hidden text-gray-900 dark:text-gray-100">
-      
-      {/* Modals & Overlays */}
+    <div className="h-screen w-screen flex flex-col bg-gray-50 dark:bg-dark-bg overflow-hidden">
       <GitModal />
       <SettingsModal />
       <AIAssistant />
 
-      {/* Top Navbar */}
       <Navbar roomId={roomId} onRun={handleRun} isRunning={isRunning} />
 
-      {/* Main 3-Column Layout */}
-      <div className="flex flex-1 overflow-hidden p-2 gap-2 h-[calc(100vh-64px)]">
-        
-        {/* Left: Presence / Sidebar (250px) */}
-        <aside className="w-64 flex-shrink-0 bg-white dark:bg-dark-surface rounded-xl border border-gray-200 dark:border-dark-border overflow-hidden flex flex-col shadow-sm z-10">
+      <div className="flex flex-1 overflow-hidden p-2 gap-2">
+        <aside className="w-64 bg-white rounded-xl border overflow-hidden">
           <Sidebar users={users} />
         </aside>
 
-        {/* Center: Editor */}
-        <main className="flex-1 min-w-0 bg-white dark:bg-dark-surface rounded-xl border border-gray-200 dark:border-dark-border overflow-hidden flex flex-col shadow-sm z-10">
-          {/* Internal Toolbar for Editor */}
-          <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 dark:border-dark-border bg-gray-50/50 dark:bg-[#162032]">
-            <div className="flex items-center gap-4">
-              <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Workspace</span>
-              
-              <select 
-                value={language}
-                onChange={(e) => setLanguage(e.target.value)}
-                className="px-2 py-1 rounded text-xs font-medium bg-white dark:bg-dark-surface border border-gray-200 dark:border-dark-border outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer"
-              >
-                <option value="python">Python</option>
-                <option value="javascript">JavaScript</option>
-                <option value="java">Java</option>
-                <option value="cpp">C++</option>
-              </select>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <button 
-                onClick={handleSaveCode}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-              >
+        <main className="flex-1 bg-white rounded-xl border flex flex-col">
+          <div className="flex justify-between px-4 py-2 border-b">
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              className="px-2 py-1 border rounded"
+            >
+              <option value="python">Python</option>
+              <option value="javascript">JavaScript</option>
+            </select>
+
+            <div className="flex gap-2">
+              <button onClick={handleSaveCode}>
                 <Download size={14} /> Save
               </button>
-              <button 
-                onClick={handleExportPDF}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-500/10 hover:bg-red-100 dark:hover:bg-red-500/20 transition-colors"
-              >
-                <FileText size={14} /> Export PDF
+              <button onClick={handleExportPDF}>
+                <FileText size={14} /> PDF
               </button>
             </div>
           </div>
-          <div className="flex-1 overflow-hidden relative">
-             <CodeEditor code={code} setCode={setCode} language={language} />
-          </div>
+
+          <CodeEditor
+            code={code}
+            setCode={(newCode) => {
+              setCode(newCode);
+
+              sendMessage({
+                action: "sendCode",
+                room_id: roomId,
+                code: newCode
+              });
+            }}
+            language={language}
+          />
         </main>
 
-        {/* Right: Console & Activities (320px) */}
-        <aside className="w-80 flex-shrink-0 flex flex-col gap-2 h-full z-10">
-          {/* Console Top Half */}
-          <div className="flex-1 bg-white dark:bg-dark-surface rounded-xl border border-gray-200 dark:border-dark-border overflow-hidden shadow-sm flex flex-col">
-            <OutputConsole logs={logs} onClear={() => setLogs([])} />
-          </div>
-          
-          {/* Activities Bottom Half */}
-          <div className="h-2/5 min-h-[200px] bg-white dark:bg-dark-surface rounded-xl border border-gray-200 dark:border-dark-border overflow-hidden shadow-sm flex flex-col">
-            <ActivityPanel activities={activities} />
-          </div>
+        <aside className="w-80 flex flex-col gap-2">
+          <OutputConsole logs={logs} onClear={() => setLogs([])} />
+          <ActivityPanel activities={activities} />
         </aside>
-
       </div>
     </div>
   );

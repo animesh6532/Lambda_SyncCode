@@ -1,31 +1,36 @@
 import json
-from services.db import get_connection
+import boto3
 
 def handler(event, context):
-    body = json.loads(event['body'])
-    
-    connection_id = event['requestContext']['connectionId']
-    room_id = body['room_id']
-    
-    conn = get_connection()
-    cursor = conn.cursor()
-    
-    # Insert connection
-    cursor.execute(
-        "INSERT INTO connections (connection_id, room_id) VALUES (%s, %s)",
-        (connection_id, room_id)
-    )
-    
-    # Ensure room exists
-    cursor.execute(
-        "INSERT IGNORE INTO rooms (room_id, code) VALUES (%s, '')",
-        (room_id,)
-    )
-    
-    conn.commit()
-    conn.close()
-    
-    return {
-        "statusCode": 200,
-        "body": "Joined room"
-    }
+    try:
+        print("📥 JOIN ROOM EVENT:", json.dumps(event))
+
+        connection_id = event["requestContext"]["connectionId"]
+        domain = event["requestContext"]["domainName"]
+        stage = event["requestContext"]["stage"]
+
+        body = json.loads(event.get("body") or "{}")
+        room_id = body.get("room_id")
+
+        if not room_id:
+            return {"statusCode": 400, "body": "room_id required"}
+
+        # ✅ Send message BACK to client
+        apigw = boto3.client(
+            "apigatewaymanagementapi",
+            endpoint_url=f"https://{domain}/{stage}"
+        )
+
+        apigw.post_to_connection(
+            ConnectionId=connection_id,
+            Data=json.dumps({
+                "type": "joined",
+                "room_id": room_id
+            })
+        )
+
+        return {"statusCode": 200}
+
+    except Exception as e:
+        print("❌ JOIN ERROR:", str(e))
+        return {"statusCode": 500, "body": str(e)}
